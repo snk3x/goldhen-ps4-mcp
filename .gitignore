@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+work/
+.mcp_*
+truenas-app.yaml
