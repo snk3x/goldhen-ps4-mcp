@@ -33,6 +33,9 @@ deploy = (here / "ps4_mcp.py").read_text(encoding="utf-8").encode("utf-8")
 (here / "work").mkdir(exist_ok=True)
 (here / "work" / "ps4_mcp.py").write_bytes(deploy)
 src_sha = hashlib.sha256(deploy).hexdigest()
+hints_deploy = (here / "hints_server.py").read_text(encoding="utf-8").encode("utf-8")
+(here / "work" / "hints_server.py").write_bytes(hints_deploy)
+hints_sha = hashlib.sha256(hints_deploy).hexdigest()
 
 ps4_host = os.environ.get("PS4_HOST", "192.168.0.50")  # your PS4's IP (set PS4_HOST when generating)
 workdir = sys.argv[1] if len(sys.argv) > 1 else "/mnt/CHANGE_ME/ps4-mcp"
@@ -41,9 +44,14 @@ ts_state = sys.argv[3] if len(sys.argv) > 3 else ""    # dataset for the tailsca
 
 # Tailscale serve/funnel config; containerboot fills in the cert domain at runtime.
 # Compose would interpolate "$", so it is written as "$$" here.
+# 443 is the public MCP endpoint (Funnel). 8443 is the phone hints page: tailnet only,
+# because it is NOT listed under AllowFunnel and has no login of its own.
 serve = {
-    "TCP": {"443": {"HTTPS": True}},
-    "Web": {"${TS_CERT_DOMAIN}:443": {"Handlers": {"/": {"Proxy": "http://ps4-mcp:8765"}}}},
+    "TCP": {"443": {"HTTPS": True}, "8443": {"HTTPS": True}},
+    "Web": {
+        "${TS_CERT_DOMAIN}:443": {"Handlers": {"/": {"Proxy": "http://ps4-mcp:8765"}}},
+        "${TS_CERT_DOMAIN}:8443": {"Handlers": {"/": {"Proxy": "http://ps4-hints:8780"}}},
+    },
     "AllowFunnel": {"${TS_CERT_DOMAIN}:443": True},
 }
 serve_json = json.dumps(serve, separators=(",", ":")).replace("$", "$$")
@@ -98,6 +106,32 @@ services:
         echo "$$PS4_MCP_SHA256  /tmp/ps4_mcp.py" | sha256sum -c - &&
         pip install --no-cache-dir --root-user-action=ignore 'mcp[cli]==2.3.0' &&
         exec python /tmp/ps4_mcp.py --http
+
+  ps4-hints:
+    image: python:3.13-slim
+    restart: unless-stopped
+    volumes:
+      - "{workdir}:/work"
+    working_dir: /tmp
+    environment:
+      PS4_HOST: "{ps4_host}"
+      PS4_FTP_PORT: "2121"
+      PS4_KLOG_PORT: "3232"
+      PS4_WORKDIR: /work
+      HINTS_DIR: /work/hints
+      HINTS_PORT: "8780"
+      PYTHONUNBUFFERED: "1"
+      PS4_MCP_SHA256: "{src_sha}"
+      HINTS_SHA256: "{hints_sha}"
+    command:
+      - sh
+      - -c
+      - |
+        cp /work/ps4_mcp.py /work/hints_server.py /tmp/ &&
+        echo "$$PS4_MCP_SHA256  /tmp/ps4_mcp.py" | sha256sum -c - &&
+        echo "$$HINTS_SHA256  /tmp/hints_server.py" | sha256sum -c - &&
+        pip install --no-cache-dir --root-user-action=ignore 'mcp[cli]==2.3.0' &&
+        exec python /tmp/hints_server.py
 {sidecar}"""
 
 out = here / "truenas-app.yaml"
